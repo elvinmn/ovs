@@ -1975,6 +1975,8 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
     struct xlate_bond_recirc xr;
     bool use_recirc = false;
 
+    bool b_idv = false;
+
     vid = output_vlan_to_vid(out_xbundle, vlan);
     if (ovs_list_is_empty(&out_xbundle->xports)) {
         /* Partially configured bundle with no slaves.  Drop the packet. */
@@ -2001,14 +2003,19 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
             }
         }
 
-        ofport = bond_choose_output_slave(out_xbundle->bond,
-                                          &ctx->xin->flow, wc, vid);
-        xport = xport_lookup(xcfg, ofport);
+	b_idv = bond_individual(out_xbundle->bond);
 
-        if (!xport) {
-            /* No slaves enabled, so drop packet. */
-            return;
-        }
+	if (!b_idv){
+            ofport = bond_choose_output_slave(out_xbundle->bond,
+                                              &ctx->xin->flow, wc, vid);
+
+	    xport = xport_lookup(xcfg, ofport);
+
+            if (!xport) {
+                /* No slaves enabled, so drop packet. */
+                return;
+            }
+	}
 
         /* If use_recirc is set, the main thread will handle stats
          * accounting for this bond. */
@@ -2039,8 +2046,19 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
         }
     }
     *flow_tci = tci;
-
-    compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL);
+    if (!b_idv)
+      compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL);
+    else {
+      struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+      struct ofport_dpif *ofport;
+      struct bond *bond = out_xbundle->bond;
+      struct bond_slave *slave;
+      HMAP_FOR_EACH (slave, hmap_node, &bond->slaves) {
+	ofport = slave->aux;
+	xport = xport_lookup(xcfg, ofport);
+        compose_output_action(ctx, xport->ofp_port, NULL);
+      }
+    }
     *flow_tci = old_tci;
 }
 

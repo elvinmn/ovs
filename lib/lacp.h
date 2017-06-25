@@ -36,6 +36,7 @@ struct lacp_settings {
     bool active;                      /* Active or passive mode? */
     bool fast;                        /* Fast or slow probe interval. */
     bool fallback_ab_cfg;             /* Fallback to BM_SLB on LACP failure. */
+    bool fallback_id_cfg;             /* Fallback individual. */
 };
 
 void lacp_init(void);

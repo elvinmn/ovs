@@ -4138,6 +4138,9 @@ port_configure_lacp(struct port *port, struct lacp_settings *s)
     s->fallback_ab_cfg = smap_get_bool(&port->cfg->other_config,
                                        "lacp-fallback-ab", false);
 
+    s->fallback_id_cfg = smap_get_bool(&port->cfg->other_config,
+                                       "lacp-fallback-id", false);
+
     return s;
 }
 
@@ -4228,6 +4231,9 @@ port_configure_bond(struct port *port, struct bond_settings *s)
     s->lacp_fallback_ab_cfg = smap_get_bool(&port->cfg->other_config,
                                        "lacp-fallback-ab", false);
 
+    s->lacp_fallback_id_cfg = smap_get_bool(&port->cfg->other_config,
+                                       "lacp-fallback-id", false);
+    
     LIST_FOR_EACH (iface, port_elem, &port->ifaces) {
         netdev_set_miimon_interval(iface->netdev, miimon_interval);
     }

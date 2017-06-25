@@ -53,6 +53,7 @@ struct bond_settings {
     int down_delay;             /* ms before disabling a down slave. */
 
     bool lacp_fallback_ab_cfg;  /* Fallback to active-backup on LACP failure. */
+    bool lacp_fallback_id_cfg;
 
     struct eth_addr active_slave_mac;
                                 /* The MAC address of the interface
@@ -78,6 +79,8 @@ bool bond_run(struct bond *, enum lacp_status);
 void bond_wait(struct bond *);
 
 void bond_slave_set_may_enable(struct bond *, void *slave_, bool may_enable);
+
+bool bond_individual(const struct bond *);
 
 /* Special MAC learning support for SLB bonding. */
 bool bond_should_send_learning_packets(struct bond *);
@@ -123,4 +126,79 @@ void bond_rebalance(struct bond *);
 void bond_update_post_recirc_rules(struct bond *, const bool force);
 bool bond_may_recirc(const struct bond *, uint32_t *recirc_id,
                      uint32_t *hash_bias);
+
+
+/* A bond slave, that is, one of the links comprising a bond. */
+struct bond_slave {
+    struct hmap_node hmap_node; /* In struct bond's slaves hmap. */
+    struct ovs_list list_node;  /* In struct bond's enabled_slaves list. */
+    struct bond *bond;          /* The bond that contains this slave. */
+    void *aux;                  /* Client-provided handle for this slave. */
+
+    struct netdev *netdev;      /* Network device, owned by the client. */
+    uint64_t change_seq;        /* Tracks changes in 'netdev'. */
+    ofp_port_t  ofp_port;       /* OpenFlow port number. */
+    char *name;                 /* Name (a copy of netdev_get_name(netdev)). */
+
+    /* Link status. */
+    long long delay_expires;    /* Time after which 'enabled' may change. */
+    bool enabled;               /* May be chosen for flows? */
+    bool may_enable;            /* Client considers this slave bondable. */
+
+    /* Rebalancing info.  Used only by bond_rebalance(). */
+    struct ovs_list bal_node;   /* In bond_rebalance()'s 'bals' list. */
+    struct ovs_list entries;    /* 'struct bond_entry's assigned here. */
+    uint64_t tx_bytes;          /* Sum across 'tx_bytes' of entries. */
+};
+
+/* A bond, that is, a set of network devices grouped to improve performance or
+ * robustness.  */
+struct bond {
+    struct hmap_node hmap_node; /* In 'all_bonds' hmap. */
+    char *name;                 /* Name provided by client. */
+    struct ofproto_dpif *ofproto; /* The bridge this bond belongs to. */
+
+    /* Slaves. */
+    struct hmap slaves;
+
+    /* Enabled slaves.
+     *
+     * Any reader or writer of 'enabled_slaves' must hold 'mutex'.
+     * (To prevent the bond_slave from disappearing they must also hold
+     * 'rwlock'.) */
+    struct ovs_mutex mutex OVS_ACQ_AFTER(rwlock);
+    struct ovs_list enabled_slaves OVS_GUARDED; /* Contains struct bond_slaves. */
+
+    /* Bonding info. */
+    enum bond_mode balance;     /* Balancing mode, one of BM_*. */
+    struct bond_slave *active_slave;
+    int updelay, downdelay;     /* Delay before slave goes up/down, in ms. */
+    enum lacp_status lacp_status; /* Status of LACP negotiations. */
+    bool bond_revalidate;       /* True if flows need revalidation. */
+    uint32_t basis;             /* Basis for flow hash function. */
+
+    /* SLB specific bonding info. */
+    struct bond_entry *hash;     /* An array of BOND_BUCKETS elements. */
+    int rebalance_interval;      /* Interval between rebalances, in ms. */
+    long long int next_rebalance; /* Next rebalancing time. */
+    bool send_learning_packets;
+    uint32_t recirc_id;          /* Non zero if recirculation can be used.*/
+    struct hmap pr_rule_ops;     /* Helps to maintain post recirculation rules.*/
+
+    /* Store active slave to OVSDB. */
+    bool active_slave_changed; /* Set to true whenever the bond changes
+                                   active slave. It will be reset to false
+                                   after it is stored into OVSDB */
+
+    /* Interface name may not be persistent across an OS reboot, use
+     * MAC address for identifing the active slave */
+    struct eth_addr active_slave_mac;
+                               /* The MAC address of the active interface. */
+    /* Legacy compatibility. */
+    bool lacp_fallback_ab; /* Fallback to active-backup on LACP failure. */
+    bool lacp_fallback_id; /* Fallback to active-backup on LACP failure. */
+
+    struct ovs_refcount ref_cnt;
+};
+
 #endif /* bond.h */

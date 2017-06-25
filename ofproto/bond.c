@@ -79,78 +79,6 @@ struct bond_entry {
     uint64_t pr_tx_bytes OVS_GUARDED_BY(rwlock);
 };
 
-/* A bond slave, that is, one of the links comprising a bond. */
-struct bond_slave {
-    struct hmap_node hmap_node; /* In struct bond's slaves hmap. */
-    struct ovs_list list_node;  /* In struct bond's enabled_slaves list. */
-    struct bond *bond;          /* The bond that contains this slave. */
-    void *aux;                  /* Client-provided handle for this slave. */
-
-    struct netdev *netdev;      /* Network device, owned by the client. */
-    uint64_t change_seq;        /* Tracks changes in 'netdev'. */
-    ofp_port_t  ofp_port;       /* OpenFlow port number. */
-    char *name;                 /* Name (a copy of netdev_get_name(netdev)). */
-
-    /* Link status. */
-    long long delay_expires;    /* Time after which 'enabled' may change. */
-    bool enabled;               /* May be chosen for flows? */
-    bool may_enable;            /* Client considers this slave bondable. */
-
-    /* Rebalancing info.  Used only by bond_rebalance(). */
-    struct ovs_list bal_node;   /* In bond_rebalance()'s 'bals' list. */
-    struct ovs_list entries;    /* 'struct bond_entry's assigned here. */
-    uint64_t tx_bytes;          /* Sum across 'tx_bytes' of entries. */
-};
-
-/* A bond, that is, a set of network devices grouped to improve performance or
- * robustness.  */
-struct bond {
-    struct hmap_node hmap_node; /* In 'all_bonds' hmap. */
-    char *name;                 /* Name provided by client. */
-    struct ofproto_dpif *ofproto; /* The bridge this bond belongs to. */
-
-    /* Slaves. */
-    struct hmap slaves;
-
-    /* Enabled slaves.
-     *
-     * Any reader or writer of 'enabled_slaves' must hold 'mutex'.
-     * (To prevent the bond_slave from disappearing they must also hold
-     * 'rwlock'.) */
-    struct ovs_mutex mutex OVS_ACQ_AFTER(rwlock);
-    struct ovs_list enabled_slaves OVS_GUARDED; /* Contains struct bond_slaves. */
-
-    /* Bonding info. */
-    enum bond_mode balance;     /* Balancing mode, one of BM_*. */
-    struct bond_slave *active_slave;
-    int updelay, downdelay;     /* Delay before slave goes up/down, in ms. */
-    enum lacp_status lacp_status; /* Status of LACP negotiations. */
-    bool bond_revalidate;       /* True if flows need revalidation. */
-    uint32_t basis;             /* Basis for flow hash function. */
-
-    /* SLB specific bonding info. */
-    struct bond_entry *hash;     /* An array of BOND_BUCKETS elements. */
-    int rebalance_interval;      /* Interval between rebalances, in ms. */
-    long long int next_rebalance; /* Next rebalancing time. */
-    bool send_learning_packets;
-    uint32_t recirc_id;          /* Non zero if recirculation can be used.*/
-    struct hmap pr_rule_ops;     /* Helps to maintain post recirculation rules.*/
-
-    /* Store active slave to OVSDB. */
-    bool active_slave_changed; /* Set to true whenever the bond changes
-                                   active slave. It will be reset to false
-                                   after it is stored into OVSDB */
-
-    /* Interface name may not be persistent across an OS reboot, use
-     * MAC address for identifing the active slave */
-    struct eth_addr active_slave_mac;
-                               /* The MAC address of the active interface. */
-    /* Legacy compatibility. */
-    bool lacp_fallback_ab; /* Fallback to active-backup on LACP failure. */
-
-    struct ovs_refcount ref_cnt;
-};
-
 /* What to do with an bond_recirc_rule. */
 enum bond_op {
     ADD,        /* Add the rule to ofproto's flow table. */
@@ -426,7 +354,11 @@ bond_reconfigure(struct bond *bond, const struct bond_settings *s)
         bond->lacp_fallback_ab = s->lacp_fallback_ab_cfg;
         revalidate = true;
     }
-
+    if (bond->lacp_fallback_id != s->lacp_fallback_id_cfg) {
+        bond->lacp_fallback_id = s->lacp_fallback_id_cfg;
+        revalidate = true;
+    }
+    
     if (bond->rebalance_interval != s->rebalance_interval) {
         bond->rebalance_interval = s->rebalance_interval;
         revalidate = true;
@@ -501,7 +433,7 @@ bond_active_slave_changed(struct bond *bond)
 
 static void
 bond_slave_set_netdev__(struct bond_slave *slave, struct netdev *netdev)
-    OVS_REQ_WRLOCK(rwlock)
+   OVS_REQ_WRLOCK(rwlock)
 {
     if (slave->netdev != netdev) {
         slave->netdev = netdev;
@@ -607,6 +539,12 @@ bond_slave_unregister(struct bond *bond, const void *slave_)
     }
 out:
     ovs_rwlock_unlock(&rwlock);
+}
+
+bool
+bond_individual(const struct bond *bond)
+{
+  return (bond->lacp_status == LACP_CONFIGURED && bond->lacp_fallback_id);
 }
 
 /* Should be called on each slave in 'bond' before bond_run() to indicate
@@ -786,7 +724,13 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
         verdict = slave->enabled ? BV_ACCEPT : BV_DROP;
         goto out;
     case LACP_CONFIGURED:
-        if (!bond->lacp_fallback_ab) {
+        VLOG_INFO("Checking");
+        if (bond->lacp_fallback_id){
+	  verdict = BV_ACCEPT;
+	  VLOG_INFO("ACCEPTED");
+	  goto out;
+        }
+        else if (!bond->lacp_fallback_ab) {
             goto out;
         }
     case LACP_DISABLED:
@@ -1772,7 +1716,7 @@ choose_output_slave(const struct bond *bond, const struct flow *flow,
         /* LACP has been configured on this bond but negotiations were
          * unsuccussful. If lacp_fallback_ab is enabled use active-
          * backup mode else drop all traffic. */
-        if (!bond->lacp_fallback_ab) {
+        if (!bond->lacp_fallback_ab && !bond->lacp_fallback_id) {
             return NULL;
         }
         balance = BM_AB;

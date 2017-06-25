@@ -106,7 +106,8 @@ struct lacp {
     bool negotiated;         /* True if LACP negotiations were successful. */
     bool update;             /* True if lacp_update() needs to be called. */
     bool fallback_ab; /* True if fallback to active-backup on LACP failure. */
-
+    bool fallback_id; /* Fallback individual. */
+  
     struct ovs_refcount ref_cnt;
 };
 
@@ -300,6 +301,11 @@ lacp_configure(struct lacp *lacp, const struct lacp_settings *s)
         lacp->update = true;
     }
 
+    if (lacp->fallback_id != s->fallback_id_cfg) {
+        lacp->fallback_id = s->fallback_id_cfg;
+        lacp->update = true;
+    }
+
     lacp_unlock();
 }
 
@@ -471,6 +477,8 @@ slave_may_enable__(struct slave *slave) OVS_REQUIRES(mutex)
      * partner is synchronized.*/
     return slave->attached && (slave->partner.state & LACP_STATE_SYNC
             || (slave->lacp && slave->lacp->fallback_ab
+                && slave->status == LACP_DEFAULTED)
+	    || (slave->lacp && slave->lacp->fallback_id
                 && slave->status == LACP_DEFAULTED));
 }
 
@@ -617,7 +625,7 @@ lacp_update_attached(struct lacp *lacp) OVS_REQUIRES(mutex)
         }
 
         if (slave->status == LACP_DEFAULTED) {
-            if (lacp->fallback_ab) {
+            if (lacp->fallback_ab || lacp->fallback_id) {
                 slave->attached = true;
             }
             continue;
@@ -641,7 +649,7 @@ lacp_update_attached(struct lacp *lacp) OVS_REQUIRES(mutex)
 
     if (lead) {
         HMAP_FOR_EACH (slave, node, &lacp->slaves) {
-            if ((lacp->fallback_ab && slave->status == LACP_DEFAULTED)
+	    if (((lacp->fallback_ab || lacp->fallback_id) && slave->status == LACP_DEFAULTED)
                 || lead->partner.key != slave->partner.key
                 || !eth_addr_equals(lead->partner.sys_id,
                                     slave->partner.sys_id)) {
