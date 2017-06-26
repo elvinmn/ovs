@@ -19,6 +19,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "mac-learning.h"
 #include "ofproto-provider.h"
 #include "packets.h"
 
@@ -199,6 +200,9 @@ struct bond {
     bool lacp_fallback_id; /* Fallback to active-backup on LACP failure. */
 
     struct ovs_refcount ref_cnt;
+
+    struct mac_learning *ml;
 };
 
+void bond_learn_mac(struct bond *, const void *slave_, const struct eth_addr eth_src, uint16_t vlan, bool is_grat_arp);
 #endif /* bond.h */

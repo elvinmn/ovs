@@ -164,6 +164,7 @@ bond_create(const struct bond_settings *s, struct ofproto_dpif *ofproto)
 
     bond = xzalloc(sizeof *bond);
     bond->ofproto = ofproto;
+    bond->ml = mac_learning_create(MAC_ENTRY_DEFAULT_IDLE_TIME);
     hmap_init(&bond->slaves);
     ovs_list_init(&bond->enabled_slaves);
     ovs_mutex_init(&bond->mutex);
@@ -624,10 +625,10 @@ bond_wait(struct bond *bond)
 static bool
 may_send_learning_packets(const struct bond *bond)
 {
-    return ((bond->lacp_status == LACP_DISABLED
+  return ((bond->lacp_status == LACP_DISABLED
         && (bond->balance == BM_SLB || bond->balance == BM_AB))
         || (bond->lacp_fallback_ab && bond->lacp_status == LACP_CONFIGURED))
-        && bond->active_slave;
+      && bond->active_slave;
 }
 
 /* Returns true if 'bond' needs the client to send out packets to assist with
@@ -682,7 +683,17 @@ bond_compose_learning_packet(struct bond *bond, const struct eth_addr eth_src,
     ovs_rwlock_unlock(&rwlock);
     return packet;
 }
-
+
+void
+bond_learn_mac(struct bond *bond, const void *slave_,
+		    const struct eth_addr eth_src, uint16_t vlan,
+		    bool is_grat_arp){
+  struct bond_slave *slave = bond_slave_lookup(bond, slave_);
+  VLOG_INFO("Learning mac for slave %s", slave->name);
+  return mac_learning_update(bond->ml, eth_src, vlan,
+			     is_grat_arp, false, slave_);
+}
+
 /* Checks whether a packet that arrived on 'slave_' within 'bond', with an
  * Ethernet destination address of 'eth_dst', should be admitted.
  *
@@ -724,10 +735,8 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
         verdict = slave->enabled ? BV_ACCEPT : BV_DROP;
         goto out;
     case LACP_CONFIGURED:
-        VLOG_INFO("Checking");
         if (bond->lacp_fallback_id){
 	  verdict = BV_ACCEPT;
-	  VLOG_INFO("ACCEPTED");
 	  goto out;
         }
         else if (!bond->lacp_fallback_ab) {
@@ -806,15 +815,29 @@ bond_choose_output_slave(struct bond *bond, const struct flow *flow,
 {
     struct bond_slave *slave;
     void *aux;
+    
+    if (bond_individual(bond)){
+	struct mac_entry *mac;
 
-    ovs_rwlock_rdlock(&rwlock);
-    slave = choose_output_slave(bond, flow, wc, vlan);
-    aux = slave ? slave->aux : NULL;
-    ovs_rwlock_unlock(&rwlock);
-
+        ovs_rwlock_rdlock(&bond->ml->rwlock);
+        mac = mac_learning_lookup(bond->ml, flow->dl_dst, vlan);
+        if (mac) {
+	  struct mac_learning_port *mlp = mac->mlport;
+	  aux = mlp->port;
+          slave = bond_slave_lookup(bond, aux);
+          VLOG_INFO("Choose to out %s", slave->name);
+	  aux = slave->aux;
+        }
+        ovs_rwlock_unlock(&bond->ml->rwlock);
+      }
+    else {
+     ovs_rwlock_rdlock(&rwlock);
+     slave = choose_output_slave(bond, flow, wc, vlan);
+     aux = slave ? slave->aux : NULL;
+     ovs_rwlock_unlock(&rwlock);
+    }
     return aux;
 }
-
 /* Recirculation. */
 static void
 bond_entry_account(struct bond_entry *entry, uint64_t rule_tx_bytes)
@@ -1716,7 +1739,7 @@ choose_output_slave(const struct bond *bond, const struct flow *flow,
         /* LACP has been configured on this bond but negotiations were
          * unsuccussful. If lacp_fallback_ab is enabled use active-
          * backup mode else drop all traffic. */
-        if (!bond->lacp_fallback_ab && !bond->lacp_fallback_id) {
+    if (!bond->lacp_fallback_ab) {
             return NULL;
         }
         balance = BM_AB;

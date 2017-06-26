@@ -55,6 +55,7 @@
 #include "openvswitch/meta-flow.h"
 #include "openvswitch/list.h"
 #include "openvswitch/ofp-actions.h"
+#include "openvswitch/ofp-util.h"
 #include "openvswitch/vlog.h"
 #include "ovs-lldp.h"
 #include "ovs-router.h"
@@ -2005,17 +2006,15 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
 
 	b_idv = bond_individual(out_xbundle->bond);
 
-	if (!b_idv){
-            ofport = bond_choose_output_slave(out_xbundle->bond,
-                                              &ctx->xin->flow, wc, vid);
+        ofport = bond_choose_output_slave(out_xbundle->bond,
+                                          &ctx->xin->flow, wc, vid);
 
-	    xport = xport_lookup(xcfg, ofport);
+	xport = xport_lookup(xcfg, ofport);
 
-            if (!xport) {
-                /* No slaves enabled, so drop packet. */
-                return;
-            }
-	}
+        if (!xport && !b_idv) {
+          /* No slaves enabled, so drop packet. */
+          return;
+        }
 
         /* If use_recirc is set, the main thread will handle stats
          * accounting for this bond. */
@@ -2046,8 +2045,13 @@ output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
         }
     }
     *flow_tci = tci;
-    if (!b_idv)
-      compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL);
+    if (xport != NULL)
+      if (b_idv){
+        compose_output_action(ctx, xport->ofp_port, NULL);
+      }
+      else {
+        compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL);
+      }
     else {
       struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
       struct ofport_dpif *ofport;
@@ -2159,7 +2163,7 @@ update_learning_table__(const struct xbridge *xbridge,
                         struct xbundle *in_xbundle, struct eth_addr dl_src,
                         int vlan, bool is_grat_arp)
 {
-    return (in_xbundle == &ofpp_none_bundle
+  return (in_xbundle == &ofpp_none_bundle
             || !mac_learning_update(xbridge->ml, dl_src, vlan,
                                     is_grat_arp,
                                     in_xbundle->bond != NULL,
@@ -2535,6 +2539,11 @@ xlate_normal(struct xlate_ctx *ctx)
 
     /* Learn source MAC. */
     bool is_grat_arp = is_gratuitous_arp(flow, wc);
+
+    struct bond *bond = in_xbundle->bond;
+    if (bond && bond_individual(bond)){
+      bond_learn_mac(bond, in_port->ofport, flow->dl_src, vlan, is_grat_arp);
+    }
     if (ctx->xin->allow_side_effects) {
         update_learning_table(ctx, in_xbundle, flow->dl_src, vlan,
                               is_grat_arp);

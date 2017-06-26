@@ -4653,7 +4653,7 @@ ofproto_unixctl_fdb_show(struct unixctl_conn *conn, int argc OVS_UNUSED,
     LIST_FOR_EACH (e, lru_node, &ofproto->ml->lrus) {
         struct ofbundle *bundle = mac_entry_get_port(ofproto->ml, e);
         char name[OFP_MAX_PORT_NAME_LEN];
-
+	VLOG_DBG("DFASF %s", bundle->name);
         ofputil_port_to_string(ofbundle_get_a_port(bundle)->up.ofp_port,
                                name, sizeof name);
         ds_put_format(&ds, "%5s  %4d  "ETH_ADDR_FMT"  %3d\n",
