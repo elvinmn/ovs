@@ -545,7 +545,8 @@ out:
 bool
 bond_individual(const struct bond *bond)
 {
-  return (bond->lacp_status == LACP_CONFIGURED && bond->lacp_fallback_id);
+    return ((bond->lacp_status == LACP_CONFIGURED || get_enabled_slave(bond) == NULL)
+             && bond->lacp_fallback_id);
 }
 
 /* Should be called on each slave in 'bond' before bond_run() to indicate
@@ -724,20 +725,17 @@ bond_check_admissibility(struct bond *bond, const void *slave_,
 
     /* LACP bonds have very loose admissibility restrictions because we can
      * assume the remote switch is aware of the bond and will "do the right
-     * thing".  However, as a precaution we drop packets on disabled slaves
-     * because no correctly implemented partner switch should be sending
-     * packets to them.
-     *
+     * thing".
      * If LACP is configured, but LACP negotiations have been unsuccessful, we
      * drop all incoming traffic except if lacp_fallback_ab is enabled. */
     switch (bond->lacp_status) {
     case LACP_NEGOTIATED:
-        verdict = slave->enabled ? BV_ACCEPT : BV_DROP;
+        verdict = BV_ACCEPT;
         goto out;
     case LACP_CONFIGURED:
         if (bond->lacp_fallback_id){
-	  verdict = BV_ACCEPT;
-	  goto out;
+	        verdict = BV_ACCEPT;
+	        goto out;
         }
         else if (!bond->lacp_fallback_ab) {
             goto out;
